@@ -1,0 +1,67 @@
+name: Rakit APK (fork)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      jenis:
+        description: "debug atau release"
+        type: choice
+        options: [debug, release]
+        default: debug
+
+permissions:
+  contents: read
+
+jobs:
+  rakit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # versi diturunkan dari tag
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Siapkan Android SDK (compileSdk 37)
+        run: |
+          set -e
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          echo "SDK: $SDK"
+          SDKMGR="$(ls "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)"
+          [ -n "$SDKMGR" ] || SDKMGR="$(command -v sdkmanager)"
+          yes | "$SDKMGR" --licenses > /dev/null 2>&1 || true
+          "$SDKMGR" --install "platform-tools" "platforms;android-37" "build-tools;37.0.0" \
+            || "$SDKMGR" --install "platform-tools" "platforms;android-37" "build-tools;36.0.0"
+          yes | "$SDKMGR" --licenses > /dev/null 2>&1 || true
+
+      - name: Rakit APK
+        run: |
+          chmod +x ./gradlew
+          JENIS="${{ github.event.inputs.jenis || 'debug' }}"
+          if [ "$JENIS" = "release" ]; then
+            ./gradlew :app:assembleRelease --no-daemon --stacktrace
+          else
+            ./gradlew :app:assembleDebug --no-daemon --stacktrace
+          fi
+
+      - name: Kumpulkan APK
+        run: |
+          mkdir -p keluaran
+          find app/build/outputs/apk -name "*.apk" -exec cp {} keluaran/ \;
+          ls -l keluaran/
+
+      - name: Unggah artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuwastream-apk
+          path: keluaran/*.apk
+          if-no-files-found: error
