@@ -31,16 +31,25 @@ jobs:
         with:
           gradle-version: "9.3.1"
 
-      - name: Siapkan Android SDK (compileSdk 37)
+      - name: Cek Android SDK (jangan gagal kalau paket tak ada di repo)
         run: |
-          set -e
           SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          echo "SDK: $SDK"
           SDKMGR="$(ls "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)"
           [ -n "$SDKMGR" ] || SDKMGR="$(command -v sdkmanager)"
+          echo "== paket yang sudah ada:"
+          "$SDKMGR" --list_installed 2>/dev/null | sed -n '1,25p' || true
+          # SDK 37 pre-release tidak selalu ada di channel stable: coba pasang, tapi
+          # JANGAN gagalkan job — runner biasanya sudah membawa platform-nya.
+          for p in "platform-tools" "platforms;android-37" "build-tools;37.0.0"; do
+            if "$SDKMGR" --install "$p" > /dev/null 2>&1; then
+              echo "terpasang: $p"
+            else
+              echo "dilewati (tidak tersedia di channel stable): $p"
+            fi
+          done
           yes | "$SDKMGR" --licenses > /dev/null 2>&1 || true
-          "$SDKMGR" --install "platform-tools" "platforms;android-37" "build-tools;37.0.0" \
-            || "$SDKMGR" --install "platform-tools" "platforms;android-37" "build-tools;36.0.0"
-          yes | "$SDKMGR" --licenses > /dev/null 2>&1 || true
+          echo "== selesai menyiapkan SDK"
 
       - name: Siapkan keystore tetap
         if: ${{ (github.event.inputs.jenis || 'release') == 'release' }}
