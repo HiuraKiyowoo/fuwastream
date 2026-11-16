@@ -6,10 +6,10 @@ on:
   workflow_dispatch:
     inputs:
       jenis:
-        description: "debug atau release"
+        description: "debug atau release (release = tanda tangan keystore tetap)"
         type: choice
-        options: [debug, release]
-        default: debug
+        options: [release, debug]
+        default: release
 
 permissions:
   contents: read
@@ -35,7 +35,6 @@ jobs:
         run: |
           set -e
           SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
-          echo "SDK: $SDK"
           SDKMGR="$(ls "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)"
           [ -n "$SDKMGR" ] || SDKMGR="$(command -v sdkmanager)"
           yes | "$SDKMGR" --licenses > /dev/null 2>&1 || true
@@ -43,21 +42,49 @@ jobs:
             || "$SDKMGR" --install "platform-tools" "platforms;android-37" "build-tools;36.0.0"
           yes | "$SDKMGR" --licenses > /dev/null 2>&1 || true
 
+      - name: Siapkan keystore tetap
+        if: ${{ (github.event.inputs.jenis || 'release') == 'release' }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "::error::Secret keystore belum dipasang (KEYSTORE_BASE64 / KEYSTORE_PASSWORD)."
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          ALIAS="${KEY_ALIAS:-fuwanime}"
+          if ! keytool -list -keystore "$RUNNER_TEMP/release.jks" -storepass "$KEYSTORE_PASSWORD" -alias "$ALIAS" >/dev/null 2>&1; then
+            ALIAS=$(keytool -list -keystore "$RUNNER_TEMP/release.jks" -storepass "$KEYSTORE_PASSWORD" 2>/dev/null \
+              | awk -F, '/PrivateKeyEntry/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1); print $1; exit }')
+          fi
+          echo "alias dipakai: $ALIAS"
+          echo "KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          echo "KEY_ALIAS=$ALIAS" >> "$GITHUB_ENV"
+
       - name: Rakit APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
           chmod +x ./gradlew
-          JENIS="${{ github.event.inputs.jenis || 'debug' }}"
+          JENIS="${{ github.event.inputs.jenis || 'release' }}"
           if [ "$JENIS" = "release" ]; then
             ./gradlew :app:assembleRelease --no-daemon --stacktrace
           else
             ./gradlew :app:assembleDebug --no-daemon --stacktrace
           fi
 
-      - name: Kumpulkan APK
+      - name: Kumpulkan APK + cetak sidik jari tanda tangan
         run: |
           mkdir -p keluaran
           find app/build/outputs/apk -name "*.apk" -exec cp {} keluaran/ \;
           ls -l keluaran/
+          BT=$(ls -d "${ANDROID_HOME:-$ANDROID_SDK_ROOT}"/build-tools/*/ 2>/dev/null | sort -V | tail -1)
+          for f in keluaran/*.apk; do
+            echo "== $f"
+            "$BT/apksigner" verify --print-certs "$f" | sed -n '1,6p'
+          done
 
       - name: Unggah artifact
         uses: actions/upload-artifact@v4
